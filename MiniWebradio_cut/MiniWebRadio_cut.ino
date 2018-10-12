@@ -46,24 +46,34 @@
 //  | Footer                                    |       _hFooter=20px
 //  +-------------------------------------------+ 240
 //                                             320
+
+#include <Arduino.h>
+
 // system libraries
 #include <Preferences.h>
 #include <SPI.h>
 #include <SD.h>
 #include <FS.h>
-#include <Arduino.h>
+
+#include <WiFi.h>
+#include <WiFiClient.h>
+#include <WiFiManager.h>
+
+#include <TimeLib.h>
+#include <ArduinoOTA.h>
+
 
 // own libraries
 #include "IR.h"             // see my repository at github "ESP32-IR-Remote-Control"
 #include "tft.h"            // see my repository at github "ESP32-TFT-Library-ILI9431-HX8347D"
-#include "mp3.h"            // see my repository at github "ESP32-TFT-Library-ILI9431-HX8347D"
+#include "mp3.h"            // 
 
 // Digital I/O used
 #define TFT_CS        22
 #define TFT_DC        21
-#define TFT_BL        17  // 33 (pico V4)
+#define TFT_BL        27  // 33 (pico V4) 17 def 27 ttgo
 #define TP_IRQ        39
-#define TP_CS         16  // 32 (pico V4)
+#define TP_CS         26  // 32 (pico V4) 16 def 26 ttgo
 #define SD_CS          5
 #define IR_PIN        34
 #define SPI_MOSI      23
@@ -118,6 +128,29 @@ enum status {RADIO = 0, RADIOico = 1, RADIOmenue = 2, CLOCK = 3, CLOCKico = 4, B
              MP3PLAYERico = 7, ALARM = 8, SLEEP = 9
             };
 status _state = RADIO;          //statemaschine
+
+unsigned long   telnet_time  = millis();
+
+//----------------------------------------------------- Karadio specific data
+
+
+#define BUFLEN  180
+
+char line[BUFLEN]; // receive buffer
+char station[BUFLEN]; //received station
+char title[BUFLEN]; // received title
+char nameset[BUFLEN]; // the local name of the station
+char _sta_num[4];    // the local number of the station
+char genre[BUFLEN]; // the genre of the station
+int16_t volume;
+uint8_t _index = 0;
+bool askDraw = false, syncTime = false, itAskTime = false;
+
+
+//------------------------------------------------ Wifi
+const char* radio_addr = "192.168.43.42";
+
+#define DBG_OUT_PORT Serial
 
 //objects
 TFT tft(0);                     // parameter:  (0)ILI9341, (1)HX8347D
@@ -466,7 +499,7 @@ void showHeadlineVolume(uint8_t vol) {
 void showHeadlineItem(const char* hl) {
   tft.setFont(Times_New_Roman27x21);
   display_info(hl, _yHeader, _hHeader, TFT_WHITE, 0);
-  if (_state != SLEEP) showHeadlineVolume(getvolume());
+  if (_state != SLEEP) showHeadlineVolume(volume);
 }
 void showHeadlineTime() {
   if (_state == CLOCK || _state == CLOCKico || _state == BRIGHTNESS || _state == ALARM || _state == SLEEP) return;
@@ -475,7 +508,7 @@ void showHeadlineTime() {
   tft.fillRect(250, _yHeader, 89, _hHeader, TFT_BLACK);
   if (!f_rtc) return; // has rtc the correct time? no -> return
   tft.setCursor(250, 0);
-  //tft.print(rtc.gettime_s()); //need append
+  tft.print(gettime_s());
 }
 void showFooter() { // bitrate stationnumber, IPaddress
   if (_state != RADIO) return;
@@ -491,7 +524,7 @@ void showFooter() { // bitrate stationnumber, IPaddress
   tft.setTextColor(TFT_GREENYELLOW);
   tft.print("STA:");
   tft.setTextColor(TFT_LAVENDER);
-  tft.printf("%03d", pref.getUInt("preset"));
+  tft.print(_sta_num);
   tft.setCursor(130, _yFooter);
   tft.setTextColor(TFT_GREENYELLOW);
   tft.print("myIP:");
@@ -508,70 +541,13 @@ void updateSleepTime() {
     _sleeptime--;
     if (_sleeptime == 0) {
       setTFTbrightness(0);    // backlight off
-      mp3.setVolume(0);       // silence
+      //      mp3.setVolume(0);       // silence ///////////////////////////////////////////////////////////
       f_sleeping = true;      // MiniWebRadio is in sleepmode now
     }
   }
   if (_state == RADIO) showFooter();
 }
 
-
-
-//**************************************************************************************************
-//                                  R E A D H O S T F R O M P R E F                                *
-//**************************************************************************************************
-String readhostfrompref(uint16_t preset) // 0 read from current preset, 1....max read nr station
-{
-  String content = "" ;    // Result of search
-  char   tkey[12] ;        // Key as an array of chars
-  _homepage = "";
-  //log_i("MaxS %i",pref.getUInt("maxstations"));
-  if (preset > pref.getUInt("maxstations")) return "";
-  if (preset == 0) preset = pref.getUInt("preset");
-  sprintf ( tkey, "preset_%03d", preset);
-  content = pref.getString(tkey);
-  _stationname = content.substring(0, content.indexOf("#")); //get stationname from preset
-  content = content.substring(content.indexOf("#") + 1, content.length()); //get URL from preset
-  content.trim();
-  _stationURL = content;
-  if (preset > 0) pref.putUInt("preset", preset);
-  f_has_ST = false; // will probably be set in ShowStreamtitle
-  return content;
-}
-String readnexthostfrompref(boolean updown) {
-  String content = "" ;    // Result of search
-  int16_t preset;
-  char    tkey[12] ;        // Key as an array of chars
-  int16_t maxtry = 0 ;      // Limit number of tries
-  int16_t pos = 0;
-  _homepage = "";
-  preset = pref.getUInt("preset");
-  do {
-    if (updown == true) {
-      preset++;
-      if (preset > pref.getUInt("maxstations")) preset = 0;
-    }
-    else {
-      preset--;
-      if (preset < 0)preset = pref.getUInt("maxstations");
-    }
-    sprintf(tkey, "preset_%03d", preset);
-    content = pref.getString(tkey);
-    pos = content.indexOf("#");
-    if (pos > 0) { //entry is not empty
-      _stationname = content.substring(0, content.indexOf("#")); //get stationname from preset
-      content = content.substring(content.indexOf("#") + 1, content.length()); //get URL from preset
-      content.trim();
-      _stationURL = content;
-    }
-    else content = "";
-    maxtry++;
-    if (maxtry == 255) return"";
-  } while (content == "" );
-  pref.putUInt("preset", preset);
-  f_has_ST = false; // will probably be set in ShowStreamtitle
-  return content;
-}
 //**************************************************************************************************
 //                                       L I S T M P 3 F I L E                                     *
 //**************************************************************************************************
@@ -618,15 +594,20 @@ String listmp3file(const char * dirname = "/mp3files", uint8_t levels = 2, fs::F
 //**************************************************************************************************
 //                                           S E T U P                                             *
 //**************************************************************************************************
-void setup() {
+void setup()
+{
+  DBG_OUT_PORT.begin(115200); // For debug
+
+  DBG_OUT_PORT.println("Starting.....");
+
   // first set all components inactive
   pinMode(SD_CS, OUTPUT);      digitalWrite(SD_CS, HIGH);
   pinMode(TFT_CS, OUTPUT);     digitalWrite(TFT_CS, HIGH);
   pinMode(TP_CS, OUTPUT);      digitalWrite(TP_CS, HIGH);
   SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI);
-  Serial.begin(115200); // For debug
+
   SD.end();       // to recognize SD after reset correctly
-  Serial.println("setup      : Init SD card");
+  DBG_OUT_PORT.println("setup      : Init SD card");
   SD.begin(SD_CS);
   delay(100); // wait while SD is ready
   tft.begin(TFT_CS, TFT_DC, SPI_MOSI, SPI_MISO, SPI_SCK, TFT_BL);    // Init TFT interface
@@ -637,22 +618,48 @@ void setup() {
   pref.begin("MiniWebRadio", false);
   setTFTbrightness(pref.getUInt("brightness"));
   f_SD_okay = (SD.cardType() != CARD_NONE); // See if known card
-  if (!f_SD_okay) Serial.println("setup      : SD card not found");
-  else Serial.println("setup      : found SD card");
+  if (!f_SD_okay) DBG_OUT_PORT.println("setup      : SD card not found");
+  else DBG_OUT_PORT.println("setup      : found SD card");
   if (pref.getString("MiniWebRadio") != "default") defaultsettings(); // first init
   if (f_SD_okay) tft.drawBmpFile(SD, "/MiniWebRadio.bmp", 0, 0); //Welcomescreen
-  
+
   _alarmdays = pref.getUInt("alarm_weekday");
   _alarmtime = pref.getString("alarm_time");
   setTFTbrightness(pref.getUInt("brightness"));
   delay(100);
 
   tft.fillScreen(TFT_BLACK); // Clear screen
-  showHeadlineItem("** Internet radio **");
-  mp3.connecttohost(readhostfrompref(0)); //last used station
+  showHeadlineItem("** KaRadio addon **");
+
+
+  //mp3.connecttohost(readhostfrompref(0)); //last used station
   //mp3.printDetails();
-  if (_station == "") showStation(); // if station gives no icy-name display _stationname
+
+
+  //------------------------------------------------------  Определяем консоль
+
+  DBG_OUT_PORT.setDebugOutput(true);
+
+  //-------------------------------------------------------- Запускаем WiFi
+
+  start_wifi();
+
+  DBG_OUT_PORT.println("WiFi started");
+
+  //------------------------------------------------------ Подключаем OTA
+  OTA_init();
+
+  //------------------------------------------------------ Запускаем парсер
+  telnet_time = millis() + 31000;
+  radio_snd("cli.info", true);
+  info();
+  migrate();
+
+  showHeadlineVolume(volume);
+  showStation(); // if station gives no icy-name display _stationname
+  showTitle(_title);
   startTimer();
+
 }
 //**************************************************************************************************
 //                                      S E T T I N G S                                            *
@@ -698,7 +705,7 @@ inline uint8_t downvolume() {
   if (vol > 0) {
     vol--;
     pref.putUInt("volume", vol);
-    if (f_mute == false) mp3.setVolume(vol);
+    //    if (f_mute == false) mp3.setVolume(vol);/////////////////////////////////////////////////////////
   }
   showHeadlineVolume(vol); return vol;
 }
@@ -707,7 +714,7 @@ inline uint8_t upvolume() {
   if (vol < 21) {
     vol++;
     pref.putUInt("volume", vol);
-    if (f_mute == false) mp3.setVolume(vol);
+    //    if (f_mute == false) mp3.setVolume(vol); ///////////////////////////////////////////////////////////
   }
   showHeadlineVolume(vol); return vol;
 }
@@ -717,13 +724,13 @@ inline uint8_t getvolume() {
 inline void mute() {
   if (f_mute == false) {
     f_mute = true;
-    mp3.setVolume(0);
+    //    mp3.setVolume(0);  /////////////////////////////////////////////////////////////////////////////////////
     showHeadlineVolume(0);
   }
   else {
     f_mute = false;
-    mp3.setVolume(getvolume());
-    showHeadlineVolume(getvolume());
+    //    mp3.setVolume(volume); ////////////////////////////////////////////////////////////////////////////////
+    showHeadlineVolume(volume);
   }
   pref.putUInt("mute", f_mute);
 }
@@ -747,7 +754,7 @@ void changeState(int state) {
   _state = static_cast<status>(state);
   switch (_state) {
     case RADIO: {
-        showFooter(); showHeadlineItem("** Internet radio **");
+        showFooter(); showHeadlineItem("** KaRadio addon **");
         showStation(); showTitle(_title);
         break;
       }
@@ -974,12 +981,18 @@ void display_time(boolean showall = false) { //show current time on the TFT Disp
   static boolean k = false;
   uint8_t i = 0;
   uint16_t j = 0;
+
   if (showall == true) oldt = "";
-  if ((_state == CLOCK) || (_state == CLOCKico)) {
-    //t = rtc.gettime_s(); need append
-    for (i = 0; i < 5; i++) {
-      if (t[i] == ':') {
-        if (k == false) {
+  if ((_state == CLOCK) || (_state == CLOCKico))
+  {
+    t = gettime_s();
+    DBG_OUT_PORT.printf("t ...", t);
+    for (i = 0; i < 5; i++)
+    {
+      if (t[i] == ':')
+      {
+        if (k == false)
+        {
           k = true;
           t[i] = 'd';
         } else {
@@ -987,16 +1000,19 @@ void display_time(boolean showall = false) { //show current time on the TFT Disp
           k = false;
         }
       }
-      if (t[i] != oldt[i]) {
+      if (t[i] != oldt[i])
+      {
         sprintf(_chbuf, "/digits/%cgn.bmp", t[i]);
+        DBG_OUT_PORT.printf("Cbuf ...", _chbuf);
+        DBG_OUT_PORT.printf("Sd ok ...", f_SD_okay);
         if (f_SD_okay) tft.drawBmpFile(SD, _chbuf, 5 + j, 45);
-        mp3.loop();
       }
       if ((t[i] == 'd') || (t[i] == 'e'))j += 24; else j += 72;
     }
     oldt = t;
   }
 }
+
 void display_sleeptime(int8_t ud = 0, boolean ready = false) { // set sleeptimer
   uint8_t p = 0, ypos[4] = {5, 54, 71, 120};
   String   m[] = {"0:00", "0:05", "0:10", "0:15", "0:30", "0:45", "1:00", "2:00", "3:00", "4:00", "5:00", "6:00"};
@@ -1050,7 +1066,7 @@ void loop() {
     if (f_rtc == true) { // true -> rtc has the current time
       int8_t h = 0;
       char tkey[20];
-//      _time_s = rtc.gettime_s(); need append
+      _time_s = gettime_s();
       if ((f_mute == false) && (!f_sleeping)) {
         if (_time_s.endsWith("59:51")) { // speech the time 9 sec before a new hour is arrived
           _hour = _time_s.substring(0, 2); // extract the hour
@@ -1058,7 +1074,7 @@ void loop() {
           h++;
           if (h == 24) h = 0;
           sprintf ( tkey, "/voice_time/%03d.mp3", h);
-          //Serial.println(tkey);
+          //DBG_OUT_PORT.println(tkey);
           _timefile = 3;
           mp3.connecttoSD(tkey);
         }
@@ -1079,20 +1095,31 @@ void loop() {
   }
   if (f_1min == true) {
     updateSleepTime();
+
+    radio_snd("cli.info", true);
+    info();
+    migrate();
+
+    showHeadlineVolume(volume);
+    showStation(); // if station gives no icy-name display _stationname
+    showTitle(_title);
+
+
     f_1min = false;
   }
- /* need append
-  if (_alarmtime == rtc.gettime_xs()) { //is alarmtime
-    if ((_alarmdays >> rtc.getweekday()) & 1) { //is alarmday
-      if (!semaphore) {
-        f_alarm = true;  //set alarmflag
-        f_mute = false;
-        semaphore = true;
-      }
+  /* need append
+    if (_alarmtime == rtc.gettime_xs()) { //is alarmtime
+     if ((_alarmdays >> rtc.getweekday()) & 1) { //is alarmday
+       if (!semaphore) {
+         f_alarm = true;  //set alarmflag
+         f_mute = false;
+         semaphore = true;
+       }
+     }
     }
-  }
-  else semaphore = false;
-*/
+    else
+  */  semaphore = false;
+
   if (_millis + 5000 < millis()) { //5sec no touch?
     if (_state == RADIOico)  {
       _state = RADIO;
@@ -1114,7 +1141,7 @@ void loop() {
     // log_i("Alarm");
     f_alarm = false;
     mp3.connecttoSD("/ring/alarm_clock.mp3");
-    mp3.setVolume(21);
+    //    mp3.setVolume(21); ///////////////////////////////////////////////////////////////////////////////////////////////
     setTFTbrightness(pref.getUInt("brightness"));
   }
 
@@ -1136,23 +1163,25 @@ void loop() {
     else {
       changeState(RADIO);
       mp3.connecttohost(_lastconnectedhost);
-      mp3.setVolume(pref.getUInt("volume"));
+      //      mp3.setVolume(pref.getUInt("volume")); //////////////////////////////////////////////////////////////////////////
     }
     f_mp3eof = false;
   }
+  ArduinoOTA.handle();
 }
+
 //**************************************************************************************************
 //                                            E V E N T S                                          *
 //**************************************************************************************************
 void RTIME_info(const char *info) {
-  Serial.print("rtime_info : ");
-  Serial.println(info);
+  DBG_OUT_PORT.print("rtime_info : ");
+  DBG_OUT_PORT.println(info);
 }
 
 //Events from tft library
 void tft_info(const char *info) {
-  Serial.print("tft_info   : ");
-  Serial.print(info);
+  DBG_OUT_PORT.print("tft_info   : ");
+  DBG_OUT_PORT.print(info);
 }
 void ir_number(const char* num) {
   if (_state == RADIO) {
@@ -1171,10 +1200,10 @@ void ir_key(const char* key) {
       break;
     case 'l':   downvolume(); if ((_state == RADIOico) || (_state == MP3PLAYERico)) showVolumeBar(); // left
       break;
-    case 'u':   if (_state == RADIO) mp3.connecttohost(readnexthostfrompref(true)); // up
+    case 'u':   //if (_state == RADIO) mp3.connecttohost(readnexthostfrompref(true)); // up //////////////////////////////
       if (_state == SLEEP) display_sleeptime(1);
       break;
-    case 'd':   if (_state == RADIO) mp3.connecttohost(readnexthostfrompref(false)); // down
+    case 'd':   //if (_state == RADIO) mp3.connecttohost(readnexthostfrompref(false)); // down ///////////////////////////
       if (_state == SLEEP) display_sleeptime(-1);
       break;
     case '#':   if (_state == SLEEP) changeState(RADIO); // #
@@ -1190,6 +1219,9 @@ void ir_key(const char* key) {
 }
 // Event from TouchPad
 void tp_pressed(uint16_t x, uint16_t y) {
+  DBG_OUT_PORT.print("state in tp pressed = "); DBG_OUT_PORT.println(_state);
+  //  DBG_OUT_PORT.print("touch y = "); DBG_OUT_PORT.println(y);
+
   uint8_t yPos = 255, y1Pos = 255, d = 0;
   if (f_sleeping == true) return; // sleepmode, awake in tp_released()
   _millis = millis();
@@ -1237,11 +1269,11 @@ void tp_pressed(uint16_t x, uint16_t y) {
     }
     if (yPos == 3) {
       _releaseNr = 3;
-      mp3.connecttohost(readnexthostfrompref(false));
+      //mp3.connecttohost(readnexthostfrompref(false)); /////////////////
     }
     if (yPos == 4) {
       _releaseNr = 4;
-      mp3.connecttohost(readnexthostfrompref(true));
+      //mp3.connecttohost(readnexthostfrompref(true)); ////////////////////
     }
   }
   if (_state == RADIOmenue) {
@@ -1363,11 +1395,13 @@ void tp_pressed(uint16_t x, uint16_t y) {
     }
   }
 }
+
 void tp_released() {
   static String str = "";
-  if (f_sleeping == true) { //awake
+  if (f_sleeping == true)
+  { //awake
     setTFTbrightness(pref.getUInt("brightness"));   // restore brightness
-    mp3.setVolume(pref.getUInt("volume"));          // restore volume
+    //    mp3.setVolume(pref.getUInt("volume"));          // restore volume ///////////////////////////////////////////////////////
     f_sleeping = false;
     return;
   }
@@ -1383,9 +1417,9 @@ void tp_released() {
       str = str.substring(str.lastIndexOf("/") + 1, str.length() - 5); //only filename, get rid of foldername(s) and suffix
       display_info(ASCIItoUTF8(str.c_str()), _yName, _hName, TFT_CYAN, 5); break; //MP3
     case  6: tft.fillScreen(TFT_BLACK); changeState(CLOCK);
-      showHeadlineItem("** Wecker **"); display_time(true); break;//Clock
+      showHeadlineItem("** Clock **"); display_time(true); break;//Clock
     case  7: changeState(RADIO); break;
-    case  8: tft.fillScreen(TFT_BLACK); changeState(SLEEP); showHeadlineItem("* Einschlafautomatik *");
+    case  8: tft.fillScreen(TFT_BLACK); changeState(SLEEP); showHeadlineItem("* SleepTimer *");
       tft.drawBmpFile(SD, "/Night_Gown.bmp", 198, 25); display_sleeptime(); break;
     case  9: changeState(ALARM); showHeadlineItem("");
       display_weekdays(_alarmdays, true);
@@ -1398,9 +1432,9 @@ void tp_released() {
     case 15: pref.putUInt("alarm_weekday", _alarmdays); // ready
       pref.putString("alarm_time", _alarmtime);
       tft.fillScreen(TFT_BLACK); changeState(CLOCK);
-      showHeadlineItem("** Wecker **");
+      showHeadlineItem("** Clock **");
       display_time(true); break;//Clock
-    case 16: tft.fillScreen(TFT_BLACK); changeState(BRIGHTNESS); showHeadlineItem("** Helligkeit **");
+    case 16: tft.fillScreen(TFT_BLACK); changeState(BRIGHTNESS); showHeadlineItem("** Brightness **");
       showBrightnessBar(); mp3.loop();
       tft.drawBmpFile(SD, "/Brightness.bmp", 0, 21); break;
     case 17: changeBtn_released(0); downBrightness(); showBrightnessBar(); break;
@@ -1433,4 +1467,288 @@ void tp_released() {
     case 26: clearTitle(); clearFooter(); changeState(MP3PLAYER); break;
   }
   _releaseNr = 0;
+}
+
+
+//---------------------------------------Client
+void radio_snd (String cmd, bool rcv)
+{
+
+  if (millis() - telnet_time > 30000)
+  {
+    DBG_OUT_PORT.println("\n Start communication over telnet");
+    String out = "\n No connect with Radio";
+    WiFiClient client;
+    const int port = 23;
+
+    if (!client.connect(radio_addr, port))
+    {
+      client.stop();
+      out = "\n connection failed";
+    }
+    else
+    {
+      client.print(cmd + "\r\n");
+      if (rcv)
+      {
+        //DBG_OUT_PORT.println("\n Start rcv");
+        char tmp = client.read();
+        unsigned long st_time = millis();
+        while (tmp != '\r' && millis() - st_time < 2000 )
+        {
+          tmp = client.read();
+          switch (tmp)
+          {
+            case '\n' :
+              if (_index == 0) break;
+
+            case '\r' :
+              line[_index] = 0; // end of string
+              _index = 0;
+              parse_k(line);
+              break;
+            case 0xFF :
+              break;
+
+            default : // put the received char in line
+
+              if (tmp < 0xFF ) line[_index++] = tmp;
+              if (_index > BUFLEN - 1) // next line
+              {
+                DBG_OUT_PORT.println(F("overflow"));
+                line[_index] = 0;
+                parse_k(line);
+                _index = 0;
+              }
+          }
+          delay(2);
+        }
+      }
+      //DBG_OUT_PORT.println("\n End rcv");
+      client.stop();
+      out = "\n Sussecs end communication over telnet";
+    }
+    DBG_OUT_PORT.println(out);
+    telnet_time = millis();
+  }
+}
+
+////////////////////////////////////////
+// parse the karadio received line and do the job
+void parse_k(char* line)
+{
+  //DBG_OUT_PORT.println("\n Start parsing");
+  char* ici;
+  removeUtf8((byte*)line);
+
+  //DBG_OUT_PORT.printf("\n Inline %s\n", line);
+
+  ////// Meta title
+  if ((ici = strstr(line, "META#: ")) != NULL)
+  {
+    strcpy(title, ici + 7);
+    //DBG_OUT_PORT.printf("\n Title ...%s\n", title);
+    askDraw = true;
+  }
+  else
+    ////// ICY5 Bitrate
+    if ((ici = strstr(line, "ICY5#: ")) != NULL)
+    {
+      _bitrate = atoi(ici + 7);
+      //DBG_OUT_PORT.printf("\n Bitrate ...%s\n", _bitrate);
+    }
+    else
+      ////// ICY4 Description
+      if ((ici = strstr(line, "ICY4#: ")) != NULL)
+      {
+        strcpy(genre, ici + 7);
+        //DBG_OUT_PORT.printf("\n Genree ...%s\n", genre);
+      }
+      else
+        ////// ICY0 station name
+        if ((ici = strstr(line, "ICY0#: ")) != NULL)
+        {
+          if (strlen(ici + 7) == 0) strcpy (station, nameset);
+          else strcpy(station, ici + 7);
+          //DBG_OUT_PORT.printf("\n Station name ...%s\n", station);
+        }
+        else
+          ////// STOPPED
+          if ((ici = strstr(line, "STOPPED")) != NULL)
+          {
+            strcpy(title, "STOPPED");
+          }
+          else
+            //////Nameset
+            if ((ici = strstr(line, "NAMESET#: ")) != NULL)
+            {
+              strcpy(nameset, ici + 9);
+              //DBG_OUT_PORT.printf("\n Nameset ...%s\n", nameset);
+              strncat(_sta_num, nameset, 4);
+              //DBG_OUT_PORT.printf("\n Station number ...%s\n", _sta_num);
+            }
+            else
+              //////Playing
+              if ((ici = strstr(line, "PLAYING#")) != NULL)
+              {
+                if (strcmp(title, "STOPPED") == 0)
+                {
+                  //;
+                }
+              }
+              else
+                //////Volume
+                if ((ici = strstr(line, "VOL#:")) != NULL)
+                {
+                  volume = atoi(ici + 6);
+                  askDraw = true;;
+                  //DBG_OUT_PORT.printf("\n Volume ...%03d\n", volume);
+                }
+                else
+                  //////Date Time  ##SYS.DATE#: 2017-04-12T21:07:59+01:00
+                  if ((ici = strstr(line, "SYS.DATE#:")) != NULL)
+                  {
+                    if (*(ici + 11) != '2') //// invalid date. try again later
+                    {
+                      askDraw = true;
+                      return;
+                    }
+                    char lstr[30];
+                    strcpy(lstr, ici + 11);
+
+                    tmElements_t dt;
+                    breakTime(now(), dt); //Записываем в структуру dt (содержащую элементы час минута секунда год) текущее время в контроллере (в дурине)
+                    int year, month, day, hour, minute, second; //объявляем переменные под год месяц день недели и.т.д
+                    sscanf(lstr, "%04d-%02d-%02dT%02d:%02d:%02d", &(year), &(month), &(day), &(hour), &(minute), &(second)); //переносим (разбираем) строчку с датой на отдельные кусочки (день месяц год и.т.д)
+                    dt.Year = year - 1970; dt.Month = month; dt.Day = day; //заменяем кусочки структуры dt значениями из нашей принятой и разобранной строки с датой и временем
+                    dt.Hour = hour; dt.Minute = minute; dt.Second = second;
+                    setTime(makeTime(dt)); //записываем в timestamp(штамп/оттиск времени в формате UNIX time (количество секунд с 1970 года) значение времени сформированное в структуре dt
+                    syncTime = true;
+                    //DBG_OUT_PORT.printf("\n Current time is %02d:%02d:%02d  %02d-%02d-%04d\n", hour, minute, second, day, month, year);
+                  }
+  //DBG_OUT_PORT.println("\n End parsing");
+}
+
+////////////////////////////////////////
+void removeUtf8(byte *characters)
+{
+  int index = 0;
+  while (characters[index])
+  {
+    if ((characters[index] >= 0xc2) && (characters[index] <= 0xc3)) // only 0 to FF ascii char
+    {
+      //      DBG_OUT_PORT.println((characters[index]));
+      characters[index + 1] = ((characters[index] << 6) & 0xFF) | (characters[index + 1] & 0x3F);
+      int sind = index + 1;
+      while (characters[sind]) {
+        characters[sind - 1] = characters[sind];
+        sind++;
+      }
+      characters[sind - 1] = 0;
+
+    }
+    index++;
+  }
+}
+
+////////////////////////////////////////
+void askTime()
+{
+  if (itAskTime) // time to ntp. Don't do that in interrupt.
+  {
+    radio_snd("sys.date", true);
+    itAskTime = false;
+  }
+}
+
+void info()
+{
+  //DBG_OUT_PORT.printf("\nNameset ...%s\n", nameset);
+  DBG_OUT_PORT.printf("\nStation number ...%s\n", _sta_num);
+  DBG_OUT_PORT.printf("Station name ...%s\n", station);
+  DBG_OUT_PORT.printf("Genree ...%s\n", genre);
+  DBG_OUT_PORT.printf("Title ...%s\n", title);
+  DBG_OUT_PORT.printf("Volume ...%03d\n", volume);
+
+  tmElements_t dt;
+  breakTime(now(), dt); //Current time (in MC) -> dt
+  DBG_OUT_PORT.printf("Current time is %02d:%02d:%02d  %02d-%02d-%04d\n", dt.Hour, dt.Minute, dt.Second, dt.Day, dt.Month, dt.Year + 1970);
+}
+
+const char* gettime_s() { // hh:mm:ss
+  tmElements_t dt;
+  breakTime(now(), dt); //Current time (in MC) -> dt
+  String s = String(dt.Hour) + ':' + String(dt.Minute) + ':' + String(dt.Second);
+  char const *pchar = s.c_str();  //use char const* as target type
+  DBG_OUT_PORT.printf("Current time is \n", pchar);
+  return pchar;
+}
+
+
+void migrate()
+{
+  _title = title;
+  _stationname = station;
+  _station = nameset;
+  _myIP = WiFi.localIP().toString();
+  f_rtc = syncTime;
+  //  _SSID = WiFi.SSID();
+}
+//////////////////////////////////////////// WiFi
+//-------------------------------------------------------------- Callback
+/*
+  void configModeCallback(WiFiManager *myWiFiManager)
+  {
+  DBG_OUT_PORT.print("\n Entered config mode, IP is...");
+  DBG_OUT_PORT.println(WiFi.localIP());
+
+  DBG_OUT_PORT.print("\n Connected to...");
+  DBG_OUT_PORT.println(WiFi.SSID());
+  }
+*/
+
+//-------------------------------------------------------------- Start_wifi
+void start_wifi()
+{
+  WiFiManager wm;
+  // wm.resetSettings();
+  //wm.setConfigPortalBlocking(false);
+  //  wm.setAPCallback(configModeCallback);
+  wm.setConfigPortalTimeout(60);
+  wm.autoConnect("Addon", "12345678");
+}
+
+//------------------------------------------------------------- OTA
+void OTA_init()
+{
+  ArduinoOTA
+  .onStart([]() {
+    String type;
+    if (ArduinoOTA.getCommand() == U_FLASH)
+      type = "sketch";
+    else // U_SPIFFS
+      type = "filesystem";
+
+    // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
+    DBG_OUT_PORT.println("Start updating " + type);
+  })
+  .onEnd([]() {
+    DBG_OUT_PORT.println("\nEnd");
+  })
+  .onProgress([](unsigned int progress, unsigned int total) {
+    DBG_OUT_PORT.printf("Progress: %u%%\r", (progress / (total / 100)));
+  })
+  .onError([](ota_error_t error) {
+    DBG_OUT_PORT.printf("Error[%u]: ", error);
+    if (error == OTA_AUTH_ERROR) DBG_OUT_PORT.println("Auth Failed");
+    else if (error == OTA_BEGIN_ERROR) DBG_OUT_PORT.println("Begin Failed");
+    else if (error == OTA_CONNECT_ERROR) DBG_OUT_PORT.println("Connect Failed");
+    else if (error == OTA_RECEIVE_ERROR) DBG_OUT_PORT.println("Receive Failed");
+    else if (error == OTA_END_ERROR) DBG_OUT_PORT.println("End Failed");
+  });
+
+  ArduinoOTA.begin();
+
+  DBG_OUT_PORT.print("OTA ready with IP address: ");
+  DBG_OUT_PORT.println(WiFi.localIP());
 }
