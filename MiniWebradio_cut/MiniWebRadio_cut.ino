@@ -436,6 +436,7 @@ void display_info(const char *str, int ypos, int height, uint16_t color, uint16_
   tft.setCursor(indent, ypos);                            // Prepare to show the info
   tft.print(str);                                         // Show the string
 }
+
 void showTitle(String str) {
   str.trim();  // remove all leading or trailing whitespaces
   str.replace(" | ", "\n");   // some stations use pipe as \n or
@@ -443,14 +444,15 @@ void showTitle(String str) {
   str.replace("|", "\n");
   if (_state != RADIO) return;
   if (txtlen(str) >  4) f_has_ST = true; else f_has_ST = false;
-  tft.setFont(Times_New_Roman43x35);
-  if (txtlen(str) > 30) tft.setFont(Times_New_Roman38x31);
-  if (txtlen(str) > 50) tft.setFont(Times_New_Roman34x27);
-  if (txtlen(str) > 70) tft.setFont(Times_New_Roman27x21);
-  if (txtlen(str) > 130) tft.setFont(Times_New_Roman21x17);
+  tft.setFont(Times_New_Roman41x42);
+  if (txtlen(str) > 4) tft.setFont(Times_New_Roman32x33);
+  if (txtlen(str) > 30) tft.setFont(Times_New_Roman23x24);
+  if (txtlen(str) > 50) tft.setFont(Times_New_Roman21x21);
+  if (txtlen(str) > 70) tft.setFont(Times_New_Roman18x18);
   //    for(int i=0;i<str.length(); i++) log_i("str[%i]=%i", i, str[i]);  // see what You get
-  display_info(str.c_str(), _yTitle, _hTitle, TFT_CYAN, 0);
+  display_info(utf8rus(str.c_str()), _yTitle, _hTitle, TFT_CYAN, 0);
 }
+
 void showStation() {
   String str1 = "", str2 = "", str3 = "";
   int16_t idx = 0;
@@ -466,10 +468,10 @@ void showStation() {
     str3.trim();
   }
 
-  tft.setFont(Times_New_Roman43x35);
-  if (txtlen(str2) > 30) tft.setFont(Times_New_Roman38x31);
-  if (txtlen(str2) > 50) tft.setFont(Times_New_Roman34x27);
-  if (txtlen(str2) > 80) tft.setFont(Times_New_Roman27x21);
+  tft.setFont(Times_New_Roman41x42);
+  if (txtlen(str2) > 30) tft.setFont(Times_New_Roman32x33);
+  if (txtlen(str2) > 50) tft.setFont(Times_New_Roman23x24);
+  if (txtlen(str2) > 80) tft.setFont(Times_New_Roman21x21);
   display_info(str2.c_str(), _yName, _hName, TFT_YELLOW, _wLogo + 14); // Show station name
 
   showTitle("");
@@ -492,18 +494,18 @@ void showHeadlineVolume(uint8_t vol) {
   sprintf(_chbuf, "Vol %02d", vol);
   tft.fillRect(180, _yHeader, 69, _hHeader, TFT_BLACK);
   tft.setCursor(180, _yHeader);
-  tft.setFont(Times_New_Roman27x21);
+  tft.setFont(Times_New_Roman23x24);
   tft.setTextColor(TFT_DEEPSKYBLUE);
   tft.print(_chbuf);
 }
 void showHeadlineItem(const char* hl) {
-  tft.setFont(Times_New_Roman27x21);
+  tft.setFont(Times_New_Roman23x24);
   display_info(hl, _yHeader, _hHeader, TFT_WHITE, 0);
-  if (_state != SLEEP) showHeadlineVolume(volume);
+  if (_state != SLEEP) showHeadlineVolume(getvolume());
 }
 void showHeadlineTime() {
   if (_state == CLOCK || _state == CLOCKico || _state == BRIGHTNESS || _state == ALARM || _state == SLEEP) return;
-  tft.setFont(Times_New_Roman27x21);
+  tft.setFont(Times_New_Roman23x24);
   tft.setTextColor(TFT_GREENYELLOW);
   tft.fillRect(250, _yHeader, 89, _hHeader, TFT_BLACK);
   if (!f_rtc) return; // has rtc the correct time? no -> return
@@ -514,7 +516,7 @@ void showFooter() { // bitrate stationnumber, IPaddress
   if (_state != RADIO) return;
   clearFooter();
   if (_bitrate.length() == 0) _bitrate = "   "; // if bitrate is unknown
-  tft.setFont(Times_New_Roman21x17);
+  tft.setFont(Times_New_Roman21x21);
   tft.setTextColor(TFT_GREENYELLOW);
   tft.setCursor(0, _yFooter);
   tft.print("BR:");
@@ -705,26 +707,39 @@ inline uint8_t downvolume() {
   if (vol > 0) {
     vol--;
     pref.putUInt("volume", vol);
+    String par = "cli.vol(\"" + vol * 10;
+    par += "\")";
+    radio_snd(par, false);
+
     //    if (f_mute == false) mp3.setVolume(vol);/////////////////////////////////////////////////////////
   }
   showHeadlineVolume(vol); return vol;
 }
+
 inline uint8_t upvolume() {
   uint8_t vol; vol = pref.getUInt("volume");
   if (vol < 21) {
     vol++;
     pref.putUInt("volume", vol);
     //    if (f_mute == false) mp3.setVolume(vol); ///////////////////////////////////////////////////////////
+    String par = "cli.vol(\"" + vol * 10;
+    par += "\")";
+    radio_snd(par, false);
   }
   showHeadlineVolume(vol); return vol;
 }
+
 inline uint8_t getvolume() {
   return pref.getUInt("volume");
 }
+
 inline void mute() {
   if (f_mute == false) {
     f_mute = true;
     //    mp3.setVolume(0);  /////////////////////////////////////////////////////////////////////////////////////
+    String par = "cli.vol(\"" + 0;
+    par += "\")";
+    radio_snd(par, false);
     showHeadlineVolume(0);
   }
   else {
@@ -1678,9 +1693,9 @@ void info()
 const char* gettime_s() { // hh:mm:ss
   tmElements_t dt;
   breakTime(now(), dt); //Current time (in MC) -> dt
-  String s = String(dt.Hour) + ':' + String(dt.Minute) + ':' + String(dt.Second);
+  String s = String(dt.Hour) + ':' + (dt.Minute < 10 ? String("0") : String("")) + String(dt.Minute) + ':' + (dt.Second < 10 ? String("0") : String("")) + String(dt.Second);
   char const *pchar = s.c_str();  //use char const* as target type
-  DBG_OUT_PORT.printf("Current time is \n", pchar);
+  //DBG_OUT_PORT.printf("Current time is \n", pchar);
   return pchar;
 }
 
@@ -1751,4 +1766,42 @@ void OTA_init()
 
   DBG_OUT_PORT.print("OTA ready with IP address: ");
   DBG_OUT_PORT.println(WiFi.localIP());
+}
+
+const char* utf8rus(const char* source)
+{
+  uint16_t i = 0, j = 0;
+  uint16_t k = strlen(source);
+  unsigned char n = 0x0;
+  //  _chbuf = source;
+  for (i = 0; i < 1024; i++) _chbuf[i] = 0;
+
+  i = 0;
+
+  while (i < k)
+  {
+    n = source[i]; i++;
+    //DBG_OUT_PORT.printf("in.%X.", n);
+    if (n == 0xD0 || n == 0xD1)   // UTF-8 handling
+    {
+      switch (n)
+      {
+        case 0xD0:
+          n = source[i]; i++;
+          if (n == 0x81) n = 0xA8; // Ё
+          else if (n >= 0x90 && n <= 0xBF) n = n + 0x30;
+          break;
+        case 0xD1:
+          n = source[i]; i++;
+          if (n == 0x91) n = 0xB8; // ё
+          else if (n >= 0x80 && n <= 0x8F) n = n + 0x70;
+          break;
+      }
+    }
+    //DBG_OUT_PORT.printf("out.%X.", n);
+    _chbuf[j] += (char)n;
+    j++;
+  }
+  //log_e("\nout.%s\n", _chbuf);
+  return _chbuf;
 }

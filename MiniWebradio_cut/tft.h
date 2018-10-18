@@ -122,12 +122,12 @@ class TFT : public Print {
     inline void setFont(const uint16_t* font) {
       _font = font;
 #ifdef TIMES_NEW_ROMAN_H_
-      if ((_font == Times_New_Roman15x14) ||
-          (_font == Times_New_Roman21x17) ||
-          (_font == Times_New_Roman27x21) ||
-          (_font == Times_New_Roman34x27) ||
-          (_font == Times_New_Roman38x31) ||
-          (_font == Times_New_Roman43x35)) {
+      if ((_font == Times_New_Roman18x18) ||
+          (_font == Times_New_Roman21x21) ||
+          (_font == Times_New_Roman23x24) ||
+          (_font == Times_New_Roman32x33) ||
+          (_font == Times_New_Roman41x42) ||
+          (_font == Times_New_Roman53x54)) {
         _f_utf8 = true; _f_cp1251 = false; _f_cp1252 = false; _f_cp1253 = false; // font can handle UTF-8
       }
       else _f_utf8 = false;
@@ -203,7 +203,7 @@ class TFT : public Print {
     boolean   _f_cp1251 = false;
     boolean   _f_cp1252 = false;
     boolean   _f_cp1253 = false;
-    const uint16_t * _font = Times_New_Roman15x14;
+    const uint16_t * _font = Times_New_Roman18x18;
     boolean   _f_curPos = false;
     uint8_t  TFT_DC  = 21;    /* Data or Command */
     uint8_t  TFT_CS  = 22;    /* SPI Chip select */
